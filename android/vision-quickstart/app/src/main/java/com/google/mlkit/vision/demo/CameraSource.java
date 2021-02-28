@@ -33,7 +33,6 @@ import android.view.WindowManager;
 import com.google.android.gms.common.images.Size;
 import com.google.mlkit.vision.demo.preference.PreferenceUtils;
 import java.io.IOException;
-import java.lang.Thread.State;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -128,7 +127,6 @@ public class CameraSource {
   public void release() {
     synchronized (processorLock) {
       stop();
-      processingRunnable.release();
       cleanScreen();
 
       if (frameProcessor != null) {
@@ -456,21 +454,22 @@ public class CameraSource {
     // rates.
     int desiredPreviewFpsScaled = (int) (desiredPreviewFps * 1000.0f);
 
-    // The method for selecting the best range is to minimize the sum of the differences between
-    // the desired value and the upper and lower bounds of the range.  This may select a range
-    // that the desired value is outside of, but this is often preferred.  For example, if the
-    // desired frame rate is 29.97, the range (30, 30) is probably more desirable than the
-    // range (15, 30).
+    // Selects a range with whose upper bound is as close as possible to the desired fps while its
+    // lower bound is as small as possible to properly expose frames in low light conditions. Note
+    // that this may select a range that the desired value is outside of. For example, if the
+    // desired frame rate is 30.5, the range (30, 30) is probably more desirable than (30, 40).
     int[] selectedFpsRange = null;
-    int minDiff = Integer.MAX_VALUE;
+    int minUpperBoundDiff = Integer.MAX_VALUE;
+    int minLowerBound = Integer.MAX_VALUE;
     List<int[]> previewFpsRangeList = camera.getParameters().getSupportedPreviewFpsRange();
     for (int[] range : previewFpsRangeList) {
-      int deltaMin = desiredPreviewFpsScaled - range[Camera.Parameters.PREVIEW_FPS_MIN_INDEX];
-      int deltaMax = desiredPreviewFpsScaled - range[Camera.Parameters.PREVIEW_FPS_MAX_INDEX];
-      int diff = Math.abs(deltaMin) + Math.abs(deltaMax);
-      if (diff < minDiff) {
+      int upperBoundDiff =
+          Math.abs(desiredPreviewFpsScaled - range[Camera.Parameters.PREVIEW_FPS_MAX_INDEX]);
+      int lowerBound = range[Camera.Parameters.PREVIEW_FPS_MIN_INDEX];
+      if (upperBoundDiff <= minUpperBoundDiff && lowerBound <= minLowerBound) {
         selectedFpsRange = range;
-        minDiff = diff;
+        minUpperBoundDiff = upperBoundDiff;
+        minLowerBound = lowerBound;
       }
     }
     return selectedFpsRange;
@@ -593,15 +592,6 @@ public class CameraSource {
     private ByteBuffer pendingFrameData;
 
     FrameProcessingRunnable() {}
-
-    /**
-     * Releases the underlying receiver. This is only safe to do after the associated thread has
-     * completed, which is managed in camera source's release method above.
-     */
-    @SuppressLint("Assert")
-    void release() {
-      assert (processingThread.getState() == State.TERMINATED);
-    }
 
     /** Marks the runnable as active/not active. Signals any blocked threads to continue. */
     void setActive(boolean active) {

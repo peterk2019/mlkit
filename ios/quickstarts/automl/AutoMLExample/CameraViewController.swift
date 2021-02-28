@@ -17,14 +17,23 @@
 import AVFoundation
 import CoreVideo
 import MLKit
+import UIKit
 
 @objc(CameraViewController)
 class CameraViewController: UIViewController {
+  private let detectors: [DetectorType] = [
+    .detectorImageLabels,
+    .detectorObjectsSingleNoClassifier,
+    .detectorObjectsSingleWithClassifier,
+    .detectorObjectsMultipleNoClassifier,
+    .detectorObjectsMultipleWithClassifier,
+  ]
 
+  private var currentDetector: DetectorType = .detectorImageLabels
   private var isUsingFrontCamera = true
   private var previewLayer: AVCaptureVideoPreviewLayer!
   private lazy var captureSession = AVCaptureSession()
-  private lazy var sessionQueue = DispatchQueue(label: Constant.sessionQueueLabel)
+  private lazy var sessionQueue = DispatchQueue(label: Constants.sessionQueueLabel)
   private var lastFrame: CMSampleBuffer?
   private lazy var modelManager = ModelManager.modelManager()
   @IBOutlet var downloadProgressView: UIProgressView!
@@ -86,44 +95,148 @@ class CameraViewController: UIViewController {
     setUpCaptureSessionInput()
   }
 
-  // MARK: - On-Device AutoML Detections
+  @IBAction func selectDetector(_ sender: Any) {
+    presentDetectorsAlertController()
+  }
 
-  private func detectImageLabelsAutoMLOndevice(
+  // MARK: - AutoML Detections
+
+  func detectObjects(
+    in visionImage: VisionImage,
+    width: CGFloat,
+    height: CGFloat,
+    shouldEnableClassification: Bool,
+    shouldEnableMultipleObjects: Bool
+  ) {
+    requestAutoMLRemoteModelIfNeeded()
+
+    let remoteModel = self.remoteModel()
+    var options: CustomObjectDetectorOptions!
+    if modelManager.isModelDownloaded(remoteModel) {
+      print("Use AutoML remote model.")
+      options = CustomObjectDetectorOptions(remoteModel: remoteModel as! CustomRemoteModel)
+    } else {
+      print("Use AutoML local model.")
+      guard
+        let localModelFilePath = Bundle.main.path(
+          forResource: Constants.localModelManifestFileName,
+          ofType: Constants.autoMLManifestFileType
+        )
+      else {
+        print(
+          "Failed to find AutoML local model manifest file: \(Constants.localModelManifestFileName)"
+        )
+        return
+      }
+      guard let localModel = LocalModel(manifestPath: localModelFilePath) else { return }
+      options = CustomObjectDetectorOptions(localModel: localModel)
+    }
+    options.shouldEnableClassification = shouldEnableClassification
+    options.shouldEnableMultipleObjects = shouldEnableMultipleObjects
+    // Due to the UI space, We will only display one label per detected object.
+    options.maxPerObjectLabelCount = 1
+    options.detectorMode = .stream
+
+    let objectDetector = ObjectDetector.objectDetector(options: options)
+    var objects: [Object]
+    do {
+      objects = try objectDetector.results(in: visionImage)
+    } catch let error {
+      print("Failed to detect objects with error: \(error.localizedDescription).")
+      return
+    }
+    weak var weakSelf = self
+    DispatchQueue.main.sync {
+      guard let strongSelf = weakSelf else {
+        print("Self is nil!")
+        return
+      }
+      strongSelf.updatePreviewOverlayView()
+      strongSelf.removeDetectionAnnotations()
+    }
+    guard !objects.isEmpty else {
+      print("Object detector returned no results.")
+      return
+    }
+
+    DispatchQueue.main.sync {
+      guard let strongSelf = weakSelf else {
+        print("Self is nil!")
+        return
+      }
+      for object in objects {
+        let normalizedRect = CGRect(
+          x: object.frame.origin.x / width,
+          y: object.frame.origin.y / height,
+          width: object.frame.size.width / width,
+          height: object.frame.size.height / height
+        )
+        let standardizedRect = strongSelf.previewLayer.layerRectConverted(
+          fromMetadataOutputRect: normalizedRect
+        ).standardized
+        UIUtilities.addRectangle(
+          standardizedRect,
+          to: strongSelf.annotationOverlayView,
+          color: UIColor.green
+        )
+        let label = UILabel(frame: standardizedRect)
+        var description = ""
+        if let trackingID = object.trackingID {
+          description += "Object ID: " + trackingID.stringValue + "\n"
+        }
+        description += object.labels.enumerated().map { (index, label) in
+          "Label \(index): \(label.text), \(label.confidence), \(label.index)"
+        }.joined(separator: "\n")
+
+        label.text = description
+        label.numberOfLines = 0
+        label.adjustsFontSizeToFitWidth = true
+        strongSelf.annotationOverlayView.addSubview(label)
+      }
+    }
+  }
+
+  private func detectImageLabels(
     in visionImage: VisionImage,
     width: CGFloat,
     height: CGFloat
   ) {
     requestAutoMLRemoteModelIfNeeded()
 
-    let remoteModel = AutoMLImageLabelerRemoteModel(name: Constant.remoteAutoMLModelName)
+    let remoteModel = self.remoteModel()
     guard
       let localModelFilePath = Bundle.main.path(
-        forResource: Constant.localModelManifestFileName,
-        ofType: Constant.autoMLManifestFileType
+        forResource: Constants.localModelManifestFileName,
+        ofType: Constants.autoMLManifestFileType
       )
     else {
       print("Failed to find AutoML local model manifest file.")
       return
     }
-    let localModel = AutoMLImageLabelerLocalModel(manifestPath: localModelFilePath)
     let isModelDownloaded = modelManager.isModelDownloaded(remoteModel)
-    let options =
+    var options: CommonImageLabelerOptions!
+    guard let localModel = LocalModel(manifestPath: localModelFilePath) else { return }
+    options =
       isModelDownloaded
-      ? AutoMLImageLabelerOptions(remoteModel: remoteModel)
-      : AutoMLImageLabelerOptions(localModel: localModel)
+      ? CustomImageLabelerOptions(remoteModel: remoteModel as! CustomRemoteModel)
+      : CustomImageLabelerOptions(localModel: localModel)
     print("Use AutoML \(isModelDownloaded ? "remote" : "local") model.")
-    options.confidenceThreshold = NSNumber(value: Constant.labelConfidenceThreshold)
+    options.confidenceThreshold = NSNumber(value: Constants.labelConfidenceThreshold)
     let autoMLImageLabeler = ImageLabeler.imageLabeler(options: options)
     print("labeler: \(autoMLImageLabeler)\n")
 
     let group = DispatchGroup()
     group.enter()
 
+    weak var weakSelf = self
     autoMLImageLabeler.process(visionImage) { detectedLabels, error in
       defer { group.leave() }
-
-      self.updatePreviewOverlayView()
-      self.removeDetectionAnnotations()
+      guard let strongSelf = weakSelf else {
+        print("Self is nil!")
+        return
+      }
+      strongSelf.updatePreviewOverlayView()
+      strongSelf.removeDetectionAnnotations()
 
       if let error = error {
         print("Failed to detect labels with error: \(error.localizedDescription).")
@@ -134,28 +247,28 @@ class CameraViewController: UIViewController {
         return
       }
 
-      let annotationFrame = self.annotationOverlayView.frame
+      let annotationFrame = strongSelf.annotationOverlayView.frame
       let resultsRect = CGRect(
-        x: annotationFrame.origin.x + Constant.padding,
-        y: annotationFrame.size.height - Constant.padding - Constant.resultsLabelHeight,
-        width: annotationFrame.width - 2 * Constant.padding,
-        height: Constant.resultsLabelHeight
+        x: annotationFrame.origin.x + Constants.padding,
+        y: annotationFrame.size.height - Constants.padding - Constants.resultsLabelHeight,
+        width: annotationFrame.width - 2 * Constants.padding,
+        height: Constants.resultsLabelHeight
       )
       let resultsLabel = UILabel(frame: resultsRect)
       resultsLabel.textColor = .yellow
       resultsLabel.text = labels.map { label -> String in
-        return "Label: \(label.text), Confidence: \(label.confidence ?? 0)"
+        return "Label: \(label.text), Confidence: \(label.confidence)"
       }.joined(separator: "\n")
       resultsLabel.adjustsFontSizeToFitWidth = true
-      resultsLabel.numberOfLines = Constant.resultsLabelLines
-      self.annotationOverlayView.addSubview(resultsLabel)
+      resultsLabel.numberOfLines = Constants.resultsLabelLines
+      strongSelf.annotationOverlayView.addSubview(resultsLabel)
     }
 
     group.wait()
   }
 
   private func requestAutoMLRemoteModelIfNeeded() {
-    let remoteModel = AutoMLImageLabelerRemoteModel(name: Constant.remoteAutoMLModelName)
+    let remoteModel = self.remoteModel()
     if modelManager.isModelDownloaded(remoteModel) {
       return
     }
@@ -171,12 +284,17 @@ class CameraViewController: UIViewController {
       name: .mlkitModelDownloadDidFail,
       object: nil
     )
+    weak var weakSelf = self
     DispatchQueue.main.async {
-      self.downloadProgressView.isHidden = false
+      guard let strongSelf = weakSelf else {
+        print("Self is nil!")
+        return
+      }
+      strongSelf.downloadProgressView.isHidden = false
       let conditions = ModelDownloadConditions(
         allowsCellularAccess: true,
         allowsBackgroundDownloading: true)
-      self.downloadProgressView.observedProgress = self.modelManager.download(
+      strongSelf.downloadProgressView.observedProgress = strongSelf.modelManager.download(
         remoteModel,
         conditions: conditions)
     }
@@ -188,8 +306,13 @@ class CameraViewController: UIViewController {
 
   @objc
   private func remoteModelDownloadDidSucceed(_ notification: Notification) {
+    weak var weakSelf = self
     let notificationHandler = {
-      self.downloadProgressView.isHidden = true
+      guard let strongSelf = weakSelf else {
+        print("Self is nil!")
+        return
+      }
+      strongSelf.downloadProgressView.isHidden = true
       guard let userInfo = notification.userInfo,
         let remoteModel = userInfo[ModelDownloadUserInfoKey.remoteModel.rawValue] as? RemoteModel
       else {
@@ -210,8 +333,13 @@ class CameraViewController: UIViewController {
 
   @objc
   private func remoteModelDownloadDidFail(_ notification: Notification) {
+    weak var weakSelf = self
     let notificationHandler = {
-      self.downloadProgressView.isHidden = true
+      guard let strongSelf = weakSelf else {
+        print("Self is nil!")
+        return
+      }
+      strongSelf.downloadProgressView.isHidden = true
       guard let userInfo = notification.userInfo,
         let remoteModel = userInfo[ModelDownloadUserInfoKey.remoteModel.rawValue] as? RemoteModel,
         let error = userInfo[ModelDownloadUserInfoKey.error.rawValue] as? NSError
@@ -232,49 +360,64 @@ class CameraViewController: UIViewController {
 
   // MARK: - Private
 
+  private func remoteModel() -> RemoteModel {
+    let firebaseModelSource = FirebaseModelSource(name: Constants.remoteAutoMLModelName)
+    return CustomRemoteModel(remoteModelSource: firebaseModelSource)
+  }
+
   private func setUpCaptureSessionOutput() {
+    weak var weakSelf = self
     sessionQueue.async {
-      self.captureSession.beginConfiguration()
+      guard let strongSelf = weakSelf else {
+        print("Self is nil!")
+        return
+      }
+      strongSelf.captureSession.beginConfiguration()
       // When performing latency tests to determine ideal capture settings,
       // run the app in 'release' mode to get accurate performance metrics
-      self.captureSession.sessionPreset = AVCaptureSession.Preset.medium
+      strongSelf.captureSession.sessionPreset = AVCaptureSession.Preset.medium
 
       let output = AVCaptureVideoDataOutput()
       output.videoSettings = [
-        (kCVPixelBufferPixelFormatTypeKey as String): kCVPixelFormatType_32BGRA,
+        (kCVPixelBufferPixelFormatTypeKey as String): kCVPixelFormatType_32BGRA
       ]
-      let outputQueue = DispatchQueue(label: Constant.videoDataOutputQueueLabel)
+      let outputQueue = DispatchQueue(label: Constants.videoDataOutputQueueLabel)
       output.setSampleBufferDelegate(self, queue: outputQueue)
-      guard self.captureSession.canAddOutput(output) else {
+      guard strongSelf.captureSession.canAddOutput(output) else {
         print("Failed to add capture session output.")
         return
       }
-      self.captureSession.addOutput(output)
-      self.captureSession.commitConfiguration()
+      strongSelf.captureSession.addOutput(output)
+      strongSelf.captureSession.commitConfiguration()
     }
   }
 
   private func setUpCaptureSessionInput() {
+    weak var weakSelf = self
     sessionQueue.async {
-      let cameraPosition: AVCaptureDevice.Position = self.isUsingFrontCamera ? .front : .back
-      guard let device = self.captureDevice(forPosition: cameraPosition) else {
+      guard let strongSelf = weakSelf else {
+        print("Self is nil!")
+        return
+      }
+      let cameraPosition: AVCaptureDevice.Position = strongSelf.isUsingFrontCamera ? .front : .back
+      guard let device = strongSelf.captureDevice(forPosition: cameraPosition) else {
         print("Failed to get capture device for camera position: \(cameraPosition)")
         return
       }
       do {
-        self.captureSession.beginConfiguration()
-        let currentInputs = self.captureSession.inputs
+        strongSelf.captureSession.beginConfiguration()
+        let currentInputs = strongSelf.captureSession.inputs
         for input in currentInputs {
-          self.captureSession.removeInput(input)
+          strongSelf.captureSession.removeInput(input)
         }
 
         let input = try AVCaptureDeviceInput(device: device)
-        guard self.captureSession.canAddInput(input) else {
+        guard strongSelf.captureSession.canAddInput(input) else {
           print("Failed to add capture session input.")
           return
         }
-        self.captureSession.addInput(input)
-        self.captureSession.commitConfiguration()
+        strongSelf.captureSession.addInput(input)
+        strongSelf.captureSession.commitConfiguration()
       } catch {
         print("Failed to create capture device input: \(error.localizedDescription)")
       }
@@ -282,14 +425,16 @@ class CameraViewController: UIViewController {
   }
 
   private func startSession() {
+    weak var weakSelf = self
     sessionQueue.async {
-      self.captureSession.startRunning()
+      weakSelf?.captureSession.startRunning()
     }
   }
 
   private func stopSession() {
+    weak var weakSelf = self
     sessionQueue.async {
-      self.captureSession.stopRunning()
+      weakSelf?.captureSession.stopRunning()
     }
   }
 
@@ -326,6 +471,31 @@ class CameraViewController: UIViewController {
     return nil
   }
 
+  private func presentDetectorsAlertController() {
+    let alertController = UIAlertController(
+      title: Constants.alertControllerTitle,
+      message: Constants.alertControllerMessage,
+      preferredStyle: .alert
+    )
+    detectors.forEach { detectorType in
+      let action = UIAlertAction(title: detectorType.rawValue, style: .default) {
+        [weak self] (action) in
+        guard let value = action.title else { return }
+        guard let detector = DetectorType(rawValue: value) else { return }
+        guard let strongSelf = self else {
+          print("Self is nil!")
+          return
+        }
+        strongSelf.currentDetector = detector
+        strongSelf.removeDetectionAnnotations()
+      }
+      if detectorType.rawValue == self.currentDetector.rawValue { action.isEnabled = false }
+      alertController.addAction(action)
+    }
+    alertController.addAction(UIAlertAction(title: Constants.cancelActionTitleText, style: .cancel))
+    present(alertController, animated: true)
+  }
+
   private func removeDetectionAnnotations() {
     for annotationView in annotationOverlayView.subviews {
       annotationView.removeFromSuperview()
@@ -343,13 +513,14 @@ class CameraViewController: UIViewController {
     guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
       return
     }
-    let rotatedImage = UIImage(cgImage: cgImage, scale: Constant.originalScale, orientation: .right)
+    let rotatedImage = UIImage(
+      cgImage: cgImage, scale: Constants.originalScale, orientation: .right)
     if isUsingFrontCamera {
       guard let rotatedCGImage = rotatedImage.cgImage else {
         return
       }
       let mirroredImage = UIImage(
-        cgImage: rotatedCGImage, scale: Constant.originalScale, orientation: .leftMirrored)
+        cgImage: rotatedCGImage, scale: Constants.originalScale, orientation: .leftMirrored)
       previewOverlayView.image = mirroredImage
     } else {
       previewOverlayView.image = rotatedImage
@@ -370,6 +541,10 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
       print("Failed to get image buffer from sample buffer.")
       return
     }
+    // Evaluate `self.currentDetector` once to ensure consistency throughout this method since it
+    // can be concurrently modified from the main thread.
+    let activeDetector = self.currentDetector
+
     lastFrame = sampleBuffer
     let visionImage = VisionImage(buffer: sampleBuffer)
     let orientation = UIUtilities.imageOrientation(
@@ -379,13 +554,40 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
     let imageWidth = CGFloat(CVPixelBufferGetWidth(imageBuffer))
     let imageHeight = CGFloat(CVPixelBufferGetHeight(imageBuffer))
 
-    detectImageLabelsAutoMLOndevice(in: visionImage, width: imageWidth, height: imageHeight)
+    let shouldEnableClassification =
+      activeDetector == .detectorObjectsSingleWithClassifier
+      || activeDetector == .detectorObjectsMultipleWithClassifier
+    let shouldEnableMultipleObjects =
+      activeDetector == .detectorObjectsMultipleNoClassifier
+      || activeDetector == .detectorObjectsMultipleWithClassifier
+
+    switch activeDetector {
+    case .detectorImageLabels:
+      detectImageLabels(in: visionImage, width: imageWidth, height: imageHeight)
+    case .detectorObjectsSingleNoClassifier, .detectorObjectsSingleWithClassifier,
+      .detectorObjectsMultipleNoClassifier, .detectorObjectsMultipleWithClassifier:
+      detectObjects(
+        in: visionImage, width: imageWidth, height: imageHeight,
+        shouldEnableClassification: shouldEnableClassification,
+        shouldEnableMultipleObjects: shouldEnableMultipleObjects)
+    }
   }
 }
 
 // MARK: - Constants
 
-fileprivate enum Constant {
+private enum DetectorType: String {
+  case detectorImageLabels = "AutoML Image Labeling"
+  case detectorObjectsSingleNoClassifier = "AutoML ODT, single, no labeling"
+  case detectorObjectsSingleWithClassifier = "AutoML ODT, single, labeling"
+  case detectorObjectsMultipleNoClassifier = "AutoML ODT, multiple, no labeling"
+  case detectorObjectsMultipleWithClassifier = "AutoML ODT, multiple, labeling"
+}
+
+private enum Constants {
+  static let alertControllerTitle = "AutoML Detectors"
+  static let alertControllerMessage = "Select a detector"
+  static let cancelActionTitleText = "Cancel"
   static let videoDataOutputQueueLabel = "com.google.mlkit.automl.VideoDataOutputQueue"
   static let sessionQueueLabel = "com.google.mlkit.automl.SessionQueue"
   static let noResultsMessage = "No Results"

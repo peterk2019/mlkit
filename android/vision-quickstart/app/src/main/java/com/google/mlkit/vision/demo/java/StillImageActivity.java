@@ -26,9 +26,7 @@ import android.provider.MediaStore;
 import androidx.appcompat.app.AppCompatActivity;
 import android.util.Log;
 import android.util.Pair;
-import android.view.Menu;
 import android.view.MenuInflater;
-import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewTreeObserver.OnGlobalLayoutListener;
 import android.widget.AdapterView;
@@ -52,9 +50,6 @@ import com.google.mlkit.vision.demo.java.posedetector.PoseDetectorProcessor;
 import com.google.mlkit.vision.demo.java.textdetector.TextRecognitionProcessor;
 import com.google.mlkit.vision.demo.preference.PreferenceUtils;
 import com.google.mlkit.vision.demo.preference.SettingsActivity;
-import com.google.mlkit.vision.demo.preference.SettingsActivity.LaunchSource;
-import com.google.mlkit.vision.label.automl.AutoMLImageLabelerLocalModel;
-import com.google.mlkit.vision.label.automl.AutoMLImageLabelerOptions;
 import com.google.mlkit.vision.label.custom.CustomImageLabelerOptions;
 import com.google.mlkit.vision.label.defaults.ImageLabelerOptions;
 import com.google.mlkit.vision.objects.custom.CustomObjectDetectorOptions;
@@ -71,13 +66,15 @@ public final class StillImageActivity extends AppCompatActivity {
   private static final String TAG = "StillImageActivity";
 
   private static final String OBJECT_DETECTION = "Object Detection";
-  private static final String OBJECT_DETECTION_CUSTOM = "Custom Object Detection (Birds)";
+  private static final String OBJECT_DETECTION_CUSTOM = "Custom Object Detection (Bird)";
+  private static final String CUSTOM_AUTOML_OBJECT_DETECTION =
+      "Custom AutoML Object Detection (Flower)";
   private static final String FACE_DETECTION = "Face Detection";
   private static final String BARCODE_SCANNING = "Barcode Scanning";
   private static final String TEXT_RECOGNITION = "Text Recognition";
   private static final String IMAGE_LABELING = "Image Labeling";
-  private static final String IMAGE_LABELING_CUSTOM = "Custom Image Labeling (Birds)";
-  private static final String AUTOML_LABELING = "AutoML Labeling";
+  private static final String IMAGE_LABELING_CUSTOM = "Custom Image Labeling (Bird)";
+  private static final String CUSTOM_AUTOML_LABELING = "Custom AutoML Image Labeling (Flower)";
   private static final String POSE_DETECTION = "Pose Detection";
 
   private static final String SIZE_SCREEN = "w:screen"; // Match screen width
@@ -177,35 +174,18 @@ public final class StillImageActivity extends AppCompatActivity {
     tryReloadAndDetectInImage();
   }
 
-  @Override
-  public boolean onCreateOptionsMenu(Menu menu) {
-    getMenuInflater().inflate(R.menu.still_image_menu, menu);
-    return true;
-  }
-
-  @Override
-  public boolean onOptionsItemSelected(MenuItem item) {
-    if (item.getItemId() == R.id.settings) {
-      Intent intent = new Intent(this, SettingsActivity.class);
-      intent.putExtra(SettingsActivity.EXTRA_LAUNCH_SOURCE, LaunchSource.STILL_IMAGE);
-      startActivity(intent);
-      return true;
-    }
-
-    return super.onOptionsItemSelected(item);
-  }
-
   private void populateFeatureSelector() {
     Spinner featureSpinner = findViewById(R.id.feature_selector);
     List<String> options = new ArrayList<>();
     options.add(OBJECT_DETECTION);
     options.add(OBJECT_DETECTION_CUSTOM);
+    options.add(CUSTOM_AUTOML_OBJECT_DETECTION);
     options.add(FACE_DETECTION);
     options.add(BARCODE_SCANNING);
     options.add(TEXT_RECOGNITION);
     options.add(IMAGE_LABELING);
     options.add(IMAGE_LABELING_CUSTOM);
-    options.add(AUTOML_LABELING);
+    options.add(CUSTOM_AUTOML_LABELING);
     options.add(POSE_DETECTION);
 
     // Creating adapter for featureSpinner
@@ -396,6 +376,15 @@ public final class StillImageActivity extends AppCompatActivity {
               PreferenceUtils.getCustomObjectDetectorOptionsForStillImage(this, localModel);
           imageProcessor = new ObjectDetectorProcessor(this, customObjectDetectorOptions);
           break;
+        case CUSTOM_AUTOML_OBJECT_DETECTION:
+          Log.i(TAG, "Using Custom AutoML Object Detector Processor");
+          LocalModel customAutoMLODTLocalModel =
+              new LocalModel.Builder().setAssetManifestFilePath("automl/manifest.json").build();
+          CustomObjectDetectorOptions customAutoMLODTOptions =
+              PreferenceUtils.getCustomObjectDetectorOptionsForStillImage(
+                  this, customAutoMLODTLocalModel);
+          imageProcessor = new ObjectDetectorProcessor(this, customAutoMLODTOptions);
+          break;
         case FACE_DETECTION:
           imageProcessor = new FaceDetectorProcessor(this);
           break;
@@ -418,26 +407,27 @@ public final class StillImageActivity extends AppCompatActivity {
               new CustomImageLabelerOptions.Builder(localClassifier).build();
           imageProcessor = new LabelDetectorProcessor(this, customImageLabelerOptions);
           break;
-        case AUTOML_LABELING:
-          Log.i(TAG, "Using AutoML Image Label Detector Processor");
-          AutoMLImageLabelerLocalModel autoMLLocalModel =
-              new AutoMLImageLabelerLocalModel.Builder()
-                  .setAssetFilePath("automl/manifest.json")
-                  .build();
-          AutoMLImageLabelerOptions autoMLOptions =
-              new AutoMLImageLabelerOptions.Builder(autoMLLocalModel)
+        case CUSTOM_AUTOML_LABELING:
+          Log.i(TAG, "Using Custom AutoML Image Label Detector Processor");
+          LocalModel customAutoMLLabelLocalModel =
+              new LocalModel.Builder().setAssetManifestFilePath("automl/manifest.json").build();
+          CustomImageLabelerOptions customAutoMLLabelOptions =
+              new CustomImageLabelerOptions.Builder(customAutoMLLabelLocalModel)
                   .setConfidenceThreshold(0)
                   .build();
-          imageProcessor = new LabelDetectorProcessor(this, autoMLOptions);
+          imageProcessor = new LabelDetectorProcessor(this, customAutoMLLabelOptions);
           break;
         case POSE_DETECTION:
           PoseDetectorOptionsBase poseDetectorOptions =
               PreferenceUtils.getPoseDetectorOptionsForStillImage(this);
+          Log.i(TAG, "Using Pose Detector with options " + poseDetectorOptions);
           boolean shouldShowInFrameLikelihood =
               PreferenceUtils.shouldShowPoseDetectionInFrameLikelihoodStillImage(this);
-          Log.i(TAG, "Using Pose Detector with options " + poseDetectorOptions);
+          boolean visualizeZ = PreferenceUtils.shouldPoseDetectionVisualizeZ(this);
+          boolean rescaleZ = PreferenceUtils.shouldPoseDetectionRescaleZForVisualization(this);
           imageProcessor =
-              new PoseDetectorProcessor(this, poseDetectorOptions, shouldShowInFrameLikelihood);
+              new PoseDetectorProcessor(
+                  this, poseDetectorOptions, shouldShowInFrameLikelihood, visualizeZ, rescaleZ);
           break;
         default:
           Log.e(TAG, "Unknown selectedMode: " + selectedMode);

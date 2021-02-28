@@ -23,6 +23,7 @@ import android.preference.PreferenceManager;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.annotation.StringRes;
+import androidx.camera.core.CameraSelector;
 import com.google.android.gms.common.images.Size;
 import com.google.common.base.Preconditions;
 import com.google.mlkit.common.model.LocalModel;
@@ -76,8 +77,14 @@ public class PreferenceUtils {
 
   @RequiresApi(VERSION_CODES.LOLLIPOP)
   @Nullable
-  public static android.util.Size getCameraXTargetResolution(Context context) {
-    String prefKey = context.getString(R.string.pref_key_camerax_target_resolution);
+  public static android.util.Size getCameraXTargetResolution(Context context, int lensfacing) {
+    Preconditions.checkArgument(
+        lensfacing == CameraSelector.LENS_FACING_BACK
+            || lensfacing == CameraSelector.LENS_FACING_FRONT);
+    String prefKey =
+        lensfacing == CameraSelector.LENS_FACING_BACK
+            ? context.getString(R.string.pref_key_camerax_rear_camera_target_resolution)
+            : context.getString(R.string.pref_key_camerax_front_camera_target_resolution);
     SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context);
     try {
       return android.util.Size.parseSize(sharedPreferences.getString(prefKey, null));
@@ -166,7 +173,7 @@ public class PreferenceUtils {
       builder.enableMultipleObjects();
     }
     if (enableClassification) {
-      builder.enableClassification();
+      builder.enableClassification().setMaxPerObjectLabelCount(1);
     }
     return builder.build();
   }
@@ -224,12 +231,12 @@ public class PreferenceUtils {
             POSE_DETECTOR_PERFORMANCE_MODE_FAST);
     if (performanceMode == POSE_DETECTOR_PERFORMANCE_MODE_FAST) {
       return new PoseDetectorOptions.Builder()
-        .setDetectorMode(PoseDetectorOptions.STREAM_MODE)
-        .build();
+          .setDetectorMode(PoseDetectorOptions.STREAM_MODE)
+          .build();
     } else {
       return new AccuratePoseDetectorOptions.Builder()
-        .setDetectorMode(AccuratePoseDetectorOptions.STREAM_MODE)
-        .build();
+          .setDetectorMode(AccuratePoseDetectorOptions.STREAM_MODE)
+          .build();
     }
   }
 
@@ -241,12 +248,12 @@ public class PreferenceUtils {
             POSE_DETECTOR_PERFORMANCE_MODE_FAST);
     if (performanceMode == POSE_DETECTOR_PERFORMANCE_MODE_FAST) {
       return new PoseDetectorOptions.Builder()
-        .setDetectorMode(PoseDetectorOptions.SINGLE_IMAGE_MODE)
-        .build();
+          .setDetectorMode(PoseDetectorOptions.SINGLE_IMAGE_MODE)
+          .build();
     } else {
       return new AccuratePoseDetectorOptions.Builder()
-        .setDetectorMode(AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE)
-        .build();
+          .setDetectorMode(AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE)
+          .build();
     }
   }
 
@@ -254,14 +261,26 @@ public class PreferenceUtils {
     SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context);
     String prefKey =
         context.getString(R.string.pref_key_live_preview_pose_detector_show_in_frame_likelihood);
-    return sharedPreferences.getBoolean(prefKey, false);
+    return sharedPreferences.getBoolean(prefKey, true);
   }
 
   public static boolean shouldShowPoseDetectionInFrameLikelihoodStillImage(Context context) {
     SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context);
     String prefKey =
         context.getString(R.string.pref_key_still_image_pose_detector_show_in_frame_likelihood);
-    return sharedPreferences.getBoolean(prefKey, false);
+    return sharedPreferences.getBoolean(prefKey, true);
+  }
+
+  public static boolean shouldPoseDetectionVisualizeZ(Context context) {
+    SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context);
+    String prefKey = context.getString(R.string.pref_key_pose_detector_visualize_z);
+    return sharedPreferences.getBoolean(prefKey, true);
+  }
+
+  public static boolean shouldPoseDetectionRescaleZForVisualization(Context context) {
+    SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context);
+    String prefKey = context.getString(R.string.pref_key_pose_detector_rescale_z);
+    return sharedPreferences.getBoolean(prefKey, true);
   }
 
   /**

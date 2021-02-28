@@ -17,7 +17,6 @@
 #import "EntityViewController.h"
 #import "MLKEntityExtractionModelIdentifier+Extensions.h"
 
-// TODO(mikie/bauerb): migrate to MLKit umbrella header on public release.
 @import MLKitCommon;
 @import MLKitEntityExtraction;
 
@@ -40,8 +39,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (NSArray<UIColor *> *)simplePalette {
   NSMutableArray<UIColor *> *palette = [NSMutableArray array];
-  [palette addObject:[[UIColor blueColor] colorWithAlphaComponent:0.25]];
-  [palette addObject:[[UIColor redColor] colorWithAlphaComponent:0.25]];
+  [palette addObject:[[UIColor cyanColor] colorWithAlphaComponent:0.25]];
+  [palette addObject:[[UIColor orangeColor] colorWithAlphaComponent:0.25]];
   [palette addObject:[[UIColor greenColor] colorWithAlphaComponent:0.25]];
   [palette addObject:[[UIColor cyanColor] colorWithAlphaComponent:0.25]];
   [palette addObject:[[UIColor magentaColor] colorWithAlphaComponent:0.25]];
@@ -51,7 +50,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  NSLocale *currentLocale = NSLocale.currentLocale;
   self.languages = MLKEntityExtractionAllModelIdentifiersSorted();
   self.colorPalette = [self.class simplePalette];
   self.modelForExtractor = @"";

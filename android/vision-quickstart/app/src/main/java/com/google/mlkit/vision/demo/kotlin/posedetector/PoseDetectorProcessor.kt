@@ -31,7 +31,9 @@ import com.google.mlkit.vision.pose.PoseDetectorOptionsBase
 class PoseDetectorProcessor(
   context: Context,
   options: PoseDetectorOptionsBase,
-  private val showInFrameLikelihood: Boolean
+  private val showInFrameLikelihood: Boolean,
+  private val visualizeZ: Boolean,
+  private val rescaleZForVisualization: Boolean
 ) :
   VisionProcessorBase<Pose>(context) {
   private val detector: PoseDetector
@@ -48,7 +50,9 @@ class PoseDetectorProcessor(
     pose: Pose,
     graphicOverlay: GraphicOverlay
   ) {
-    graphicOverlay.add(PoseGraphic(graphicOverlay, pose, showInFrameLikelihood))
+    graphicOverlay.add(
+      PoseGraphic(
+        graphicOverlay, pose, showInFrameLikelihood, visualizeZ, rescaleZForVisualization))
   }
 
   override fun onFailure(e: Exception) {
